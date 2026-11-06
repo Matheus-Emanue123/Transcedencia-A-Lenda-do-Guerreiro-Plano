@@ -29,7 +29,7 @@ texturas, formas, curvas, profundidade e termina num mundo 3D renderizado em tem
 | VI | A Torre das Curvas | **Curvas de Bézier** / De Casteljau | Arrasta pontos de controle para guiar uma bola de fogo pelos anéis, desviando dos pilares (quadrática e cúbicas) |
 | VII | O Limiar da Profundidade | **Projeções** ortográfica e perspectiva | Gira objetos 3D até a projeção coincidir com a fechadura (quadrado, hexágono do cubo, triângulo, túnel em perspectiva) |
 | VIII | A Forja da Revolução | **Superfícies de revolução** e **malhas** | Modela o perfil (Bézier) de um elmo e de um cálice; a forja gira o perfil e gera a malha 3D |
-| IX | Transcendência | **Câmera virtual** (lookAt) e **pipeline 3D** | Explora o mundo 3D em primeira pessoa, recolhe 3 cristais e derrota Vorax |
+| IX | Transcendência | **Câmera virtual** (lookAt), **pipeline 3D**, **modelos OBJ**, **mapeamento de textura** | Explora em primeira pessoa um reino 3D (castelo, moinho, lago, montanhas) e os reinos 2D achatados por Vorax, onde os planicianos ainda andam desenhados no chão; recolhe 3 cristais e derrota Vorax em 3D |
 
 Em todas as fases, **H** abre o "Pergaminho do Conhecimento", com a teoria e as fórmulas do conceito.
 
@@ -52,6 +52,7 @@ ESC encerra a demonstração.
 
 ### Controles gerais
 - **Prólogo**: SETAS andam, ESPAÇO pula, E conversa com os aldeões
+- **Fase IX**: o MOUSE gira a câmera (fica capturado durante o jogo; M solta/prende), W/A/S/D andam, clique ou ESPAÇO lançam raios, RODA altera o FOV
 - **ESPAÇO / ENTER / clique**: avança os diálogos (TAB pula o diálogo)
 - **H**: pergaminho com o conceito da fase
 - **F5**: reinicia a fase
@@ -80,6 +81,16 @@ vértice (SRO) → Model → SRU → View (lookAt) → recorte no plano *near* (
 divisão por *w* (SRN) → Viewport (SRD). A visibilidade usa *back-face culling* e o algoritmo do pintor, e a
 iluminação usa Lambert com sombreamento constante e névoa.
 
+Na Fase IX o pipeline ganhou também:
+- **modelos OBJ/MTL** (representação por faces) com cor por face amostrada da textura, correção de gama e
+  **simplificação por agrupamento de vértices**, mais um **nível de detalhe (LOD)** escolhido pela distância;
+- **agrupamento de geometria estática** em blocos espaciais, para reduzir o número de chamadas;
+- **recorte de polígonos 2D (Sutherland–Hodgman)** contra a viewport;
+- **mapeamento de textura com perspectiva correta** por lançamento de raios (um raio por pixel cruzando o plano do
+  chão), usado nos reinos 2D achatados e nas pessoas 2D, com alongamento **anamórfico** para ficarem legíveis da
+  altura dos olhos;
+- **deformação de vértices animada** na cauda do Vorax (como um vertex shader).
+
 O game loop usa **delta time**, então o movimento não depende do FPS.
 
 ## Estrutura
@@ -104,6 +115,10 @@ assets/                 sprites, fontes e licenças
 - **Kenney** (www.kenney.nl), *Tiny Dungeon*, *Tiny Town* e *Pixel Platformer*, licença CC0: cavaleiro, mago,
   vilarejo, castelo e masmorra
 - **Cethiel**, *Dragon - Fully Animated* (OpenGameArt.org), licença CC0: o dragão Vorax
+- **Modelos 3D** (CC0, OpenGameArt.org), lidos de OBJ/MTL e simplificados por `engine/model.py`:
+  - Vorax: Drummyfish, *Cethiel's Dragon 3D* (modelo feito a partir do mesmo dragão 2D de Cethiel usado no jogo)
+  - Volumar: Quaternius, *RPG Characters* (Wizard), com o manto tingido de roxo e um chapéu modelado no jogo
+  - Castelo, moinho, torre, casas, poço, árvores, rochas e montanhas: Kay Lousberg, *KayKit Medieval Builder Pack*
 - **Músicas** (CC0, OpenGameArt.org). A trilha acompanha a evolução do mundo: chiptune 8-bit, depois medieval acústico, depois orquestra e coral no 3D.
   - RandomMind: *Kings Feast* (menu), *The Bard's Tale* (Fase I), *The Old Tower Inn* (II), *Medieval Exploration* (III), *Market Day* (IV–V), *Rejoicing* (final)
   - cesisco: *Fantasy Choir 1 e 2* (VI e IX)

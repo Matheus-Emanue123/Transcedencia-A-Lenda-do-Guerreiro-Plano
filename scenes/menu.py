@@ -35,6 +35,8 @@ CREDITOS = (
     " • Efeitos sonoros (CC0): Kenney (RPG Audio, Impact, Interface, UI Audio, Music Jingles, Digital Audio, "
     "Sci-fi Sounds) e OpenGameArt: rubberduck, Julien Matthey, AntumDeluge, Almitory, Ogrebane, IgnasD, "
     "themightyglider, VishwaJai, StarNinjas, Darsycho, Thimras, isaiah658, JaggedStone, SketchMan3, pyranostudios.\n"
+    " • Modelos 3D (CC0): Vorax - Drummyfish (baseado no dragão de Cethiel); Volumar - Quaternius (RPG Characters); "
+    "castelo, moinho, casas, árvores e montanhas - Kay Lousberg (KayKit Medieval Builder Pack).\n"
     " • Fontes: MedievalSharp (Wojciech Kalinowski) e Press Start 2P (CodeMan38) - SIL Open Font License\n"
 )
 

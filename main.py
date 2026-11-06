@@ -18,7 +18,13 @@ def main():
     if '--demo' in sys.argv:
         from engine.autoplay import Driver
         game.driver = Driver(game)
-        game.run(lambda g: menu.Menu(g))
+        nums = [a for a in sys.argv[1:] if a.isdigit()]
+        if nums:                                   # python main.py --demo 9
+            from scenes import PHASES
+            i = max(1, min(len(PHASES), int(nums[0]))) - 1
+            game.run(lambda g: PHASES[i](g))
+        else:
+            game.run(lambda g: menu.Menu(g))
         return
     # permite pular direto para uma fase:  python main.py 4
     if len(sys.argv) > 1 and sys.argv[1].isdigit():
