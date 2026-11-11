@@ -75,6 +75,7 @@ class Fase8(Phase):
     def setup(self):
         self.ti = 0
         self.renderer = Renderer3D(VIEW, fov=45)
+        self.renderer.hq = self.game.hq
         self.renderer.fog_start, self.renderer.fog_end = 50, 200
         self.ang = 30.0
         self.drag_view = False

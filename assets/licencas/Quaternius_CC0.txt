@@ -1,0 +1,9 @@
+Modelos 3D de Quaternius (https://quaternius.com), obtidos em https://poly.pizza
+
+- Tree, Autumn Tree, Pine Tree Autumn, Tree Spiral, Dead Tree e Bush
+  originais em assets/models/src (oak, oak_autumn, pine, cursed_tree, dead_tree, bush .glb),
+  recoloridos e simplificados em assets/models/*.npz por tools/bake_gltf.py
+- RPG Characters (Wizard) -> assets/models/volumar.npz
+
+Licença: Creative Commons Zero (CC0 1.0) - domínio público
+https://creativecommons.org/publicdomain/zero/1.0/

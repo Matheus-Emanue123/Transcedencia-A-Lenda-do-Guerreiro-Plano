@@ -1,0 +1,10 @@
+Simple 3D Dragon Model - por MattBas
+https://opengameart.org/content/simple-3d-dragon-model
+
+Licença: Creative Commons Atribuição-CompartilhaIgual 4.0 (CC BY-SA 4.0)
+https://creativecommons.org/licenses/by-sa/4.0/
+
+Arquivo original: assets/models/src/vorax_dragon.glb
+Adaptação (Vorax): cores trocadas (azul -> vermelho-sangue, olhos amarelos) e animações de ataque, dano e
+morte criadas sobre o voo original por tools/bake_gltf.py; resultado em assets/models/vorax_anim.npz.
+A adaptação é distribuída sob a mesma licença CC BY-SA 4.0.

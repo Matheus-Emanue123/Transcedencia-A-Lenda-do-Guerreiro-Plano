@@ -490,6 +490,7 @@ class Driver:
                 self.pressed.add(K.K_LEFT if diff > 0 else K.K_RIGHT)
             if abs(diff) < 35:
                 self.pressed.add(K.K_w)
+                self.pressed.add(K.K_LSHIFT)          # o mapa é grande: corre
             if abs(sc.pitch - 2) > 2:
                 self.pressed.add(K.K_DOWN if sc.pitch > 2 else K.K_UP)
             # desvio se ficar preso em uma árvore
@@ -502,7 +503,7 @@ class Driver:
             if strafe_t > 0:
                 strafe_t -= self.dt
                 self.pressed.add(K.K_d)
-            self.say(f'Indo até o cristal ({tgt[0]:.0f}, {tgt[2]:.0f})   -   recolhidos: {sum(sc.got)}/3')
+            self.say(f'Indo até o cristal ({tgt[0]:.0f}, {tgt[2]:.0f})   -   absorvidos: {sum(sc.got)}/3')
             yield 0
         self.pressed.clear()
         yield 0.5

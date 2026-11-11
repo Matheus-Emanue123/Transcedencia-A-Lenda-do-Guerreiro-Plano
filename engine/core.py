@@ -41,6 +41,9 @@ class Game:
         self._fade_dir = 0
         self.running = True
         self.progress = self._load()
+        # configurações persistentes (gravadas junto do progresso em save.json)
+        self.settings = self.progress.setdefault('settings', {})
+        self.settings.setdefault('gfx', 'bonito')        # 'bonito' ou 'simples'
         self.show_fps = False
         self.driver = None          # piloto automático (modo demonstração)
 
@@ -55,6 +58,18 @@ class Game:
     def mark_done(self, idx):
         if idx not in self.progress['done']:
             self.progress['done'].append(idx)
+        self.save()
+
+    @property
+    def hq(self):
+        """Gráficos na qualidade alta (malhas completas, iluminação hemisférica, bordas suavizadas)."""
+        return self.settings.get('gfx') != 'simples'
+
+    def set_setting(self, key, value):
+        self.settings[key] = value
+        self.save()
+
+    def save(self):
         try:
             with open(SAVE, 'w', encoding='utf8') as f:
                 json.dump(self.progress, f)

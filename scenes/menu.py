@@ -1,5 +1,6 @@
-"""Menu principal: título, seleção de fases e créditos."""
+"""Menu principal: título, seleção de fases, configurações e créditos."""
 import math
+import numpy as np
 import pygame
 
 from engine.core import Scene, W, H
@@ -35,8 +36,10 @@ CREDITOS = (
     " • Efeitos sonoros (CC0): Kenney (RPG Audio, Impact, Interface, UI Audio, Music Jingles, Digital Audio, "
     "Sci-fi Sounds) e OpenGameArt: rubberduck, Julien Matthey, AntumDeluge, Almitory, Ogrebane, IgnasD, "
     "themightyglider, VishwaJai, StarNinjas, Darsycho, Thimras, isaiah658, JaggedStone, SketchMan3, pyranostudios.\n"
-    " • Modelos 3D (CC0): Vorax - Drummyfish (baseado no dragão de Cethiel); Volumar - Quaternius (RPG Characters); "
-    "castelo, moinho, casas, árvores e montanhas - Kay Lousberg (KayKit Medieval Builder Pack).\n"
+    " • Vorax 3D: MattBas - 'Simple 3D Dragon Model' (CC-BY-SA 4.0, OpenGameArt.org), recolorido e com animações novas.\n"
+    " • Modelos 3D (CC0): Volumar - Quaternius (RPG Characters); "
+    "castelo, moinho, casas e montanhas - Kay Lousberg (KayKit Medieval Builder Pack); árvores e arbustos - "
+    "Quaternius (via Poly Pizza).\n"
     " • Fontes: MedievalSharp (Wojciech Kalinowski) e Press Start 2P (CodeMan38) - SIL Open Font License\n"
 )
 
@@ -50,13 +53,24 @@ class Menu(Scene):
         self.t = 0
         self.mode = 'main'
         bx = W // 2 - 160
-        self.buttons = [
-            Button((bx, 330, 320, 52), 'Iniciar Jornada', self.novo),
-            Button((bx, 394, 320, 52), 'Continuar', self.continuar),
-            Button((bx, 458, 320, 52), 'Selecionar Fase', lambda: self.set_mode('select')),
-            Button((bx, 522, 320, 52), 'Créditos', lambda: self.set_mode('credits')),
-            Button((bx, 586, 320, 52), 'Sair', self.sair),
+        labels = [('Iniciar Jornada', self.novo), ('Continuar', self.continuar),
+                  ('Selecionar Fase', lambda: self.set_mode('select')),
+                  ('Configurações', lambda: self.set_mode('settings')),
+                  ('Créditos', lambda: self.set_mode('credits')), ('Sair', self.sair)]
+        self.buttons = [Button((bx, 290 + i * 60, 320, 50), lab, cb) for i, (lab, cb) in enumerate(labels)]
+        # painel de configurações: qualidade gráfica (dois cartões) e FPS
+        self.gfx_cards = [
+            ('simples', 'Simplificados', 'Malhas reduzidas, nível de detalhe baixo já de perto e bordas '
+                                         'serrilhadas. Mais quadros por segundo.'),
+            ('bonito', 'Bonitos', 'Malhas completas, detalhe alto até longe, luz hemisférica e bordas '
+                                  'suavizadas. Exige mais do computador.'),
         ]
+        self.gfx_buttons = []
+        for i, (key, lab, _) in enumerate(self.gfx_cards):
+            b = Button((W // 2 - 470 + i * 480, 230, 460, 230), '', (lambda k=key: self.set_gfx(k)))
+            b.key = key
+            self.gfx_buttons.append(b)
+        self.fps_button = Button((W // 2 - 170, 500, 340, 50), '', self.toggle_fps)
         self.phase_buttons = []
         done = set(game.progress.get('done', []))
         for i, (num, nome, conc) in enumerate(NOMES):
@@ -72,6 +86,61 @@ class Menu(Scene):
     def set_mode(self, m):
         audio.sfx('book_open' if m == 'credits' else ('ui_back' if m == 'main' else 'page'))
         self.mode = m
+
+    def _preview(self, surf, rect, hq):
+        """Vorax girando, desenhado pelo pipeline 3D na qualidade do cartão (comparação lado a lado)."""
+        if not hasattr(self, '_vorax'):
+            from engine import model as MDL
+            from engine.render3d import Renderer3D
+            self._vorax = MDL.load_anim('vorax_anim')
+            self._prev_r = {}
+            self._Renderer3D = Renderer3D
+        key = (hq, tuple(rect))
+        if key not in self._prev_r:
+            r = self._Renderer3D(rect, fov=40)
+            r.light = cg.normalize((0.55, 0.62, 0.55))
+            r.ambient = 0.42
+            r.hq = hq
+            self._prev_r[key] = r
+        r = self._prev_r[key]
+        a = math.radians(self.t * 40)
+        r.set_camera((3.3 * math.sin(a), 1.5, 3.3 * math.cos(a)), (0, 0.55, 0))
+        r.begin()
+        v, faces, cols = self._vorax.pose('hi' if hq else 'lo', 'Flying', self.t)
+        r.mesh(v, faces, np.eye(4), (200, 200, 200), colors=cols, cull=True)
+        pygame.draw.rect(surf, (150, 176, 214), rect, border_radius=6)
+        r.render(surf)
+        return len(faces)
+
+    def draw_settings(self, surf):
+        text(surf, 'Configurações', (W // 2, 90), 48, C['gold'], center=True)
+        text(surf, 'Qualidade gráfica', (W // 2, 170), 26, C['parch'], center=True)
+        cur = self.game.settings.get('gfx', 'bonito')
+        for b, (key, lab, desc) in zip(self.gfx_buttons, self.gfx_cards):
+            sel = key == cur
+            r = b.rect
+            panel(surf, r, alpha=235, border=C['gold'] if (sel or b.hover) else None)
+            pr = pygame.Rect(r.x + 14, r.y + 14, 190, r.h - 28)
+            nf = self._preview(surf, pr, key == 'bonito')
+            text(surf, f'{nf} faces', (pr.centerx, pr.bottom - 18), 14, (30, 30, 50), center=True, kind='mono')
+            tx = pr.right + 16
+            text(surf, lab, (tx, r.y + 16), 28, C['gold'] if sel else C['text'])
+            text_block(surf, desc, (tx, r.y + 58, r.right - tx - 14, r.h - 100), 16, C['text'], kind='serif')
+            text(surf, 'Selecionado' if sel else 'Clique para escolher', (tx, r.bottom - 34), 18,
+                 C['green'] if sel else C['dim'])
+        self.fps_button.label = 'Mostrar FPS: ' + ('sim' if self.game.show_fps else 'não')
+        self.fps_button.draw(surf)
+        text(surf, 'A qualidade vale para as cenas 3D (Fases VIII e IX e o final). F3 mostra o FPS em qualquer tela.',
+             (W // 2, 580), 16, C['dim'], center=True)
+        self.back.draw(surf)
+
+    def set_gfx(self, key):
+        if self.game.settings.get('gfx') != key:
+            self.game.set_setting('gfx', key)
+            audio.sfx('powerup' if key == 'bonito' else 'page')
+
+    def toggle_fps(self):
+        self.game.show_fps = not self.game.show_fps
 
     def novo(self):
         from scenes import intro
@@ -96,6 +165,11 @@ class Menu(Scene):
         elif self.mode == 'select':
             for b in self.phase_buttons:
                 b.handle(e)
+            self.back.handle(e)
+        elif self.mode == 'settings':
+            for b in self.gfx_buttons:
+                b.handle(e)
+            self.fps_button.handle(e)
             self.back.handle(e)
         else:
             self.back.handle(e)
@@ -152,6 +226,8 @@ class Menu(Scene):
                 if done:
                     text(surf, '✓', (b.rect.right - 34, b.rect.y + 12), 26, C['green'], kind='serif')
             self.back.draw(surf)
+        elif self.mode == 'settings':
+            self.draw_settings(surf)
         else:
             r = pygame.Rect(90, 30, W - 180, H - 110)
             panel(surf, r, alpha=245)

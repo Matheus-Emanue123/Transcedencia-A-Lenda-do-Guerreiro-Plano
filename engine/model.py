@@ -105,14 +105,24 @@ def load_obj(path, texture_override=None, tex_dir=None):
 
 def decimate(verts, faces, cols, cells=24):
     """Simplificação por agrupamento de vértices numa grade cells x cells x cells."""
+    inv, cnt, nf, nc = cluster(verts, faces, cols, cells)
+    newv = np.zeros((len(cnt), 3))
+    np.add.at(newv, inv, verts)
+    newv /= cnt[:, None]
+    return newv, nf, nc
+
+
+def cluster(verts, faces, cols, cells=24):
+    """Agrupamento de vértices: devolve a célula de cada vértice (inv), quantos
+    vértices caíram em cada célula e as faces/cores que sobrevivem. Separado de
+    decimate() para que a MESMA simplificação possa ser aplicada a todos os
+    quadros de uma animação (tools/bake_gltf.py)."""
     mn, mx = verts.min(axis=0), verts.max(axis=0)
     size = (mx - mn).max() / cells
     key = np.floor((verts - mn) / size).astype(np.int64)
     ids = key[:, 0] * 1_000_000 + key[:, 1] * 1_000 + key[:, 2]
     uniq, inv = np.unique(ids, return_inverse=True)
-    newv = np.zeros((len(uniq), 3))
-    np.add.at(newv, inv, verts)
-    newv /= np.bincount(inv)[:, None]
+    inv = inv.ravel()
     nf, nc, seen = [], [], set()
     for f, c in zip(faces, cols):
         g = []
@@ -132,7 +142,114 @@ def decimate(verts, faces, cols, cells=24):
         seen.add(k)
         nf.append(tuple(g))
         nc.append(c)
-    return newv, nf, nc
+    return inv, np.bincount(inv), nf, nc
+
+
+def simplify_qem(verts, faces, cols, target, weights=None):
+    """Simplificação por COLAPSO DE ARESTAS com métrica de erro quádrico (Garland & Heckbert, 1997).
+
+    Cada vértice guarda uma matriz 4x4 Q = soma dos planos das faces vizinhas (p·pᵀ, com
+    p = (a, b, c, d) do plano ax + by + cz + d = 0). O erro de pôr o vértice em h = (x, y, z, 1)
+    é hᵀ·Q·h: a soma dos quadrados das distâncias a esses planos. Colapsa-se sempre a aresta
+    de menor erro, somando os Q dos dois vértices. Ao contrário do agrupamento de vértices
+    (decimate), preserva partes finas como troncos e galhos. Arestas de borda recebem um plano
+    extra, perpendicular à face, para a malha não encolher nas aberturas. `weights` (um peso
+    por face) encarece o erro de certas faces - usado para proteger os troncos das árvores."""
+    import heapq
+    V = np.array(verts, dtype=float)
+    F, C, Wt = [], [], []
+    for n_, (f, c) in enumerate(zip(faces, cols)):     # só triângulos (quads são divididos)
+        for k in range(1, len(f) - 1):
+            F.append([f[0], f[k], f[k + 1]])
+            C.append(c)
+            Wt.append(1.0 if weights is None else weights[n_])
+    if len(F) <= target:
+        return V, [tuple(f) for f in F], C
+    n = len(V)
+    Q = np.zeros((n, 4, 4))
+    vf = [set() for _ in range(n)]
+    edge_count = {}
+    for fi, f in enumerate(F):
+        a, b, c = V[f[0]], V[f[1]], V[f[2]]
+        nr = np.cross(b - a, c - a)
+        area = np.linalg.norm(nr)
+        for k in range(3):
+            vf[f[k]].add(fi)
+            e = (min(f[k], f[k - 1]), max(f[k], f[k - 1]))
+            edge_count.setdefault(e, []).append(fi)
+        if area > 1e-14:
+            nr = nr / area
+            p = np.append(nr, -nr @ a)
+            K = np.outer(p, p) * area * Wt[fi]
+            for k in range(3):
+                Q[f[k]] += K
+    for (i, j), fl in edge_count.items():              # bordas: plano que contém a aresta, perpendicular à face
+        if len(fl) == 1:
+            f = F[fl[0]]
+            nr = np.cross(V[f[1]] - V[f[0]], V[f[2]] - V[f[0]])
+            e = V[j] - V[i]
+            pn = np.cross(e, nr)
+            ln = np.linalg.norm(pn)
+            if ln > 1e-14:
+                pn = pn / ln
+                p = np.append(pn, -pn @ V[i])
+                K = np.outer(p, p) * (e @ e) * 10
+                Q[i] += K
+                Q[j] += K
+    alive_f = [True] * len(F)
+    ver = [0] * n
+    nf = len(F)
+    heap = []
+
+    def push(i, j):
+        Qs = Q[i] + Q[j]
+        best = None
+        for pos in (V[i], V[j], (V[i] + V[j]) / 2):
+            h = np.append(pos, 1.0)
+            cost = float(h @ Qs @ h)
+            if best is None or cost < best[0]:
+                best = (cost, pos)
+        d = V[i] - V[j]
+        heapq.heappush(heap, (best[0] + 1e-9 * float(d @ d), i, j, ver[i], ver[j], tuple(best[1])))
+
+    for (i, j) in edge_count:
+        push(i, j)
+    while nf > target and heap:
+        cost, i, j, vi, vj, pos = heapq.heappop(heap)
+        if ver[i] != vi or ver[j] != vj:
+            continue
+        V[i] = pos
+        Q[i] = Q[i] + Q[j]
+        for fi in list(vf[j]):
+            f = F[fi]
+            if i in f:                                  # face que continha a aresta: degenera
+                alive_f[fi] = False
+                nf -= 1
+                for k in f:
+                    vf[k].discard(fi)
+            else:
+                f[f.index(j)] = i
+                vf[i].add(fi)
+        vf[j] = set()
+        seen = {}
+        for fi in list(vf[i]):                          # faces que ficaram duplicadas
+            key = tuple(sorted(F[fi]))
+            if key in seen:
+                alive_f[fi] = False
+                nf -= 1
+                for k in F[fi]:
+                    vf[k].discard(fi)
+            else:
+                seen[key] = fi
+        ver[i] += 1
+        ver[j] = -1
+        for k in {k for fi in vf[i] for k in F[fi]} - {i}:
+            push(min(i, k), max(i, k)) if ver[k] >= 0 else None
+    used = sorted({k for fi, f in enumerate(F) if alive_f[fi] for k in f})
+    remap = {k: a for a, k in enumerate(used)}
+    out_f = [tuple(remap[k] for k in f) for fi, f in enumerate(F) if alive_f[fi]]
+    out_c = [C[fi] for fi in range(len(F)) if alive_f[fi]]
+    return V[used], out_f, out_c
 
 
 def normalize(verts, height=None, size=None, ground=True):
@@ -200,3 +317,40 @@ def load(name):
     m = Model(d['v'], _unpack(d['n'], d['f']), [tuple(int(x) for x in c) for c in d['c']], lod)
     _cache[name] = m
     return m
+
+
+class AnimModel:
+    """Modelo com animação por vértices pré-calculada (ver tools/bake_gltf.py).
+
+    Cada animação é uma sequência de quadros com as posições de todos os
+    vértices. Em execução interpolamos linearmente entre os dois quadros
+    vizinhos ao instante t:  v(t) = (1 - α)·A + α·B. Há dois níveis de detalhe:
+    'hi' (malha completa) e 'lo' (simplificada), escolhidos pela qualidade gráfica."""
+
+    def __init__(self, d):
+        self.fps = float(d['fps'])
+        names = [str(n) for n in d['names']]
+        self.dur = {n: float(d[f'dur{i}']) for i, n in enumerate(names)}
+        self.levels = {}
+        for lv, pre in (('hi', ''), ('lo', 'lo_')):
+            frames = {n: d[f'{pre}f{i}'].astype(np.float64) for i, n in enumerate(names)}
+            cols = [tuple(int(x) for x in c) for c in d[pre + 'c']]
+            self.levels[lv] = (frames, _unpack(d[pre + 'n'], d[pre + 'f']), cols)
+
+    def pose(self, level, anim, t, loop=True):
+        """Vértices da animação `anim` no instante t (segundos)."""
+        frames, faces, cols = self.levels[level]
+        F = frames[anim]
+        dur = self.dur[anim]
+        t = (t % dur) if loop else min(max(t, 0.0), dur)
+        x = t / dur * (len(F) - 1)
+        k = min(int(x), len(F) - 2)
+        a = x - k
+        return F[k] * (1 - a) + F[k + 1] * a, faces, cols
+
+
+def load_anim(name):
+    key = ('anim', name)
+    if key not in _cache:
+        _cache[key] = AnimModel(np.load(os.path.join(MODEL_DIR, name + '.npz')))
+    return _cache[key]

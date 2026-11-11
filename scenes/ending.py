@@ -13,7 +13,7 @@ FALAS = [
     ('Vorax', 'dragon', 'Impossível... um ser nascido numa grade de pixels... dominando a profundidade...'),
     ('Volumar', 'wizard', 'Vorax achatava mundos porque acreditava que só ele merecia ter volume. Mas a geometria '
                           'pertence a quem a estuda.'),
-    ('Volumar', 'wizard', 'Com o dragão derrotado, sua magia se desfaz. Olhe, Lineu: Planícia está ganhando '
+    ('Volumar', 'wizard', 'Com o último cristal partido, o feitiço se desfaz. Olhe, Lineu: Planícia está ganhando '
                           'profundidade de novo!'),
     ('Sir Lineu', 'knight', 'Pixels, cores, matrizes, coordenadas, curvas, projeções, superfícies, câmeras... '
                             'Cada arte acrescentou algo ao meu mundo.'),
@@ -34,6 +34,7 @@ class Ending(Scene):
         self.dialog = Dialog(self.assets, FALAS, self.done)
         self.finished = False
         self.r = Renderer3D((0, 0, W, H), fov=55)
+        self.r.hq = self.game.hq
         self.r.fog_color = (20, 16, 40)
         self.r.fog_start, self.r.fog_end = 20, 60
         cyl = cg.cylinder(1.2, 6, 10)

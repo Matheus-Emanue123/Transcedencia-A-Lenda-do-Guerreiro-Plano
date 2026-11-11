@@ -10,6 +10,10 @@ render3d.py - Um pipeline gráfico 3D em software, escrito do zero.
 
 Visibilidade: back-face culling + algoritmo do pintor (ordenação por profundidade).
 Iluminação: sombreamento constante (flat) com o modelo de Lambert + névoa.
+
+Qualidade alta (hq): luz ambiente HEMISFÉRICA (faces voltadas para o céu recebem
+mais luz ambiente que as voltadas para o chão) e bordas dos polígonos suavizadas
+(antisserrilhamento com linhas aa). Custa mais quadros por segundo.
 """
 import math
 import numpy as np
@@ -18,6 +22,11 @@ import pygame
 from .cg import look_at, perspective, normalize
 
 KEY_COLOR = (255, 0, 255)       # cor usada como transparente (colorkey) nos decalques
+
+# Vértices atrás da câmera geram divisões por zero na projeção; essas faces são descartadas ou
+# recortadas depois, então os avisos do numpy são desligados uma vez aqui (mais barato do que
+# abrir um bloco np.errstate a cada malha desenhada).
+np.seterr(divide='ignore', invalid='ignore', over='ignore')
 
 
 class Renderer3D:
@@ -30,11 +39,13 @@ class Renderer3D:
         self.ambient = 0.35
         self.fog_color = (150, 170, 200)
         self.fog_start, self.fog_end = 25.0, 80.0
+        self.fog_max = 0.85             # névoa máxima (1 = objetos distantes somem por completo)
         self.V = np.eye(4)
         self.eye = np.zeros(3)
         self.P = perspective(fov, self.rect.w / self.rect.h, near, far)
         self.items = []
         self.stats = {'faces': 0, 'drawn': 0}
+        self.hq = False
 
     @property
     def fog_arr(self):
@@ -57,13 +68,14 @@ class Renderer3D:
     def _to_screen(self, pv):
         """pv: array (N,3) no espaço da câmera -> pixels (N,2) usando a
         matriz de projeção + divisão perspectiva + transformação de viewport."""
-        N = len(pv)
-        h = np.hstack([pv, np.ones((N, 1))]) @ self.P.T     # espaço de recorte
-        w = h[:, 3:4]
-        ndc = h[:, :2] / w                                   # SRN [-1, 1]
-        sx = self.rect.x + (ndc[:, 0] + 1) * 0.5 * self.rect.w
-        sy = self.rect.y + (1 - (ndc[:, 1] + 1) * 0.5) * self.rect.h   # Y invertido
-        return np.stack([sx, sy], axis=1)
+        # A matriz de perspectiva só tem P[0,0], P[1,1] e w = -z relevantes para x e y:
+        # recorte -> divisão por w (SRN em [-1, 1]) -> viewport, com o Y invertido.
+        P, R = self.P, self.rect
+        w = -pv[:, 2]
+        out = np.empty((len(pv), 2))
+        out[:, 0] = R.x + (pv[:, 0] * P[0, 0] / w + 1) * (0.5 * R.w)
+        out[:, 1] = R.y + (1 - pv[:, 1] * P[1, 1] / w) * (0.5 * R.h)
+        return out
 
     def _clip_near(self, poly):
         """Sutherland-Hodgman contra o plano z = -near (espaço da câmera)."""
@@ -138,98 +150,142 @@ class Renderer3D:
         for fi, f in enumerate(faces):
             groups.setdefault(len(f), []).append(fi)
         out = [(k, np.array(fis), np.array([faces[i] for i in fis])) for k, fis in groups.items()]
-        if len(self._group_cache) > 300:
+        if len(self._group_cache) > 3000:
             self._group_cache.clear()
         self._group_cache[key] = (faces, out)
         return out
 
-    def mesh(self, verts, faces, model, color, light=True, cull=True, outline=None, layer=1, colors=None):
+    def visible(self, center, radius):
+        """Teste rápido de visibilidade (frustum culling) pela esfera envolvente: leva só o centro
+        ao espaço da câmera e compara com os planos do tronco de pirâmide. Quem chama evita, assim,
+        transformar milhares de vértices de um objeto que nem aparece na tela."""
+        V = self.V
+        x, y, z = center
+        cz = V[2, 0] * x + V[2, 1] * y + V[2, 2] * z + V[2, 3]
+        if cz - radius > -self.near:                       # inteiro atrás da câmera
+            return False
+        d = -cz
+        if d > radius:
+            tf = math.tan(math.radians(self.fov) / 2) * 1.05
+            cx = V[0, 0] * x + V[0, 1] * y + V[0, 2] * z + V[0, 3]
+            if abs(cx) - radius > d * tf * self.rect.w / self.rect.h:
+                return False
+            cy = V[1, 0] * x + V[1, 1] * y + V[1, 2] * z + V[1, 3]
+            if abs(cy) - radius > d * tf:
+                return False
+        return True
+
+    def mesh(self, verts, faces, model, color, light=True, cull=True, outline=None, layer=1, colors=None,
+             fogk=1.0):
         """Desenha uma malha poligonal. Normais, culling, iluminação e névoa são
-        calculados de forma vetorizada (numpy) para todas as faces de uma vez."""
+        calculados de forma vetorizada (numpy) para todas as faces de uma vez.
+        model=None indica vértices já no SRU (geometria estática): pula a transformação de modelo."""
         verts = np.asarray(verts, dtype=float)
-        vw = verts @ model[:3, :3].T + model[:3, 3]                 # SRO -> SRU (mundo)
+        vw = verts if model is None else verts @ model[:3, :3].T + model[:3, 3]     # SRO -> SRU (mundo)
         vc = vw @ self.V[:3, :3].T + self.V[:3, 3]                  # SRU -> câmera
         zc = -self.near
         # rejeição rápida pela esfera envolvente (atrás da câmera / fora do frustum)
         cen = vc.mean(axis=0)
-        rad = float(np.sqrt(((vc - cen) ** 2).sum(axis=1)).max())
+        dv = vc - cen
+        rad = math.sqrt(float((dv * dv).sum(axis=1).max()))
         if cen[2] - rad > zc:
             return
         tf = math.tan(math.radians(self.fov) / 2)
         aspect = self.rect.w / self.rect.h
         if -cen[2] > rad and (abs(cen[0]) - rad > -cen[2] * tf * aspect * 1.05 or abs(cen[1]) - rad > -cen[2] * tf * 1.05):
             return
-        with np.errstate(all='ignore'):
-            scr = self._to_screen(vc)
+        scr = self._to_screen(vc)
+        vz = vc[:, 2]
+        eye = self.eye
+        R_ = self.rect
         for k, fis, F in self._groups(faces):
             self.stats['faces'] += len(fis)
-            Pw = vw[F]
-            Pc = vc[F]
+            # normal da face pelo produto vetorial de duas arestas (triângulo) ou das diagonais (quadrilátero)
+            P0 = vw[F[:, 0]]
             if k == 3:
-                n = np.cross(Pw[:, 1] - Pw[:, 0], Pw[:, 2] - Pw[:, 0])
+                a, b = vw[F[:, 1]] - P0, vw[F[:, 2]] - P0
             else:
-                n = np.cross(Pw[:, 2] - Pw[:, 0], Pw[:, 3] - Pw[:, 1])
-            ln = np.linalg.norm(n, axis=1)
-            valid = ln > 1e-12
-            n = n / np.where(valid, ln, 1)[:, None]
-            centers = Pw.mean(axis=1)
-            facing = ((self.eye - centers) * n).sum(axis=1)
-            zmin = Pc[:, :, 2].min(axis=1)
-            zmax = Pc[:, :, 2].max(axis=1)
-            keep = valid & (zmin <= zc)
+                a, b = vw[F[:, 2]] - P0, vw[F[:, 3]] - vw[F[:, 1]]
+            n = np.empty_like(a)
+            n[:, 0] = a[:, 1] * b[:, 2] - a[:, 2] * b[:, 1]
+            n[:, 1] = a[:, 2] * b[:, 0] - a[:, 0] * b[:, 2]
+            n[:, 2] = a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
+            ln = np.sqrt((n * n).sum(axis=1))
+            facing = ((eye - P0) * n).sum(axis=1)                   # > 0: a face olha para a câmera
+            Z = vz[F]
+            zmin, zmax = Z.min(axis=1), Z.max(axis=1)
+            keep = (ln > 1e-12) & (zmin <= zc)
             if cull:
                 keep &= facing > 0                                  # back-face culling
-            else:
-                n = np.where((facing < 0)[:, None], -n, n)          # iluminação dos dois lados
-            # descarta faces minúsculas na tela (área projetada < ~1 pixel²)
-            Sf = scr[F]
-            sx, sy = Sf[:, :, 0], Sf[:, :, 1]
-            with np.errstate(all='ignore'):
-                area = 0.5 * np.abs((sx * np.roll(sy, -1, axis=1) - sy * np.roll(sx, -1, axis=1)).sum(axis=1))
-            keep &= ~((zmax <= zc) & (area < 1.0))
-            depth = -Pc[:, :, 2].mean(axis=1)
-            if light:
-                kl = self.ambient + (1 - self.ambient) * np.clip(n @ self.light, 0, 1)
-            else:
-                kl = np.ones(len(fis))
-            fog = np.clip((depth - self.fog_start) / (self.fog_end - self.fog_start), 0, 0.85)
             idx = np.nonzero(keep)[0]
             if len(idx) == 0:
                 continue
+            # daqui em diante só as faces que sobraram
+            Fk = F[idx]
+            P2 = scr[Fk]
+            zmax = zmax[idx]
+            sx, sy = P2[:, :, 0], P2[:, :, 1]
+            nxt = list(range(1, k)) + [0]
+            area = 0.5 * np.abs((sx * sy[:, nxt] - sy * sx[:, nxt]).sum(axis=1))   # área projetada (cadarço)
+            big_enough = ~((zmax <= zc) & (area < 1.0))             # descarta faces menores que ~1 pixel²
+            if not big_enough.all():
+                idx, Fk, P2, zmax = idx[big_enough], Fk[big_enough], P2[big_enough], zmax[big_enough]
+                if len(idx) == 0:
+                    continue
+            depth = -Z[idx].sum(axis=1) / k
+            if light:
+                nk = n[idx] / ln[idx, None]
+                if not cull:
+                    nk = np.where((facing[idx] < 0)[:, None], -nk, nk)   # iluminação dos dois lados
+                if self.hq:
+                    # ambiente hemisférico: céu (n.y = 1) mais claro, chão (n.y = -1) mais escuro
+                    kl = self.ambient * (0.78 + 0.3 * nk[:, 1]) + (1 - self.ambient) * np.clip(nk @ self.light, 0, 1)
+                else:
+                    kl = self.ambient + (1 - self.ambient) * np.clip(nk @ self.light, 0, 1)
+            else:
+                kl = None
+            fog = (np.clip((depth - self.fog_start) / (self.fog_end - self.fog_start), 0, self.fog_max) * fogk)[:, None]
             # cor final de todas as faces de uma vez: (cor base · Lambert) misturada com a névoa
             base = self._color_array(colors)[fis[idx]] if colors is not None else np.array(color, dtype=np.float32)[None, :]
-            lit = np.minimum(255.0, base * kl[idx, None])
-            fcol = (lit * (1 - fog[idx, None]) + self.fog_arr * fog[idx, None]).astype(np.int32)
-            near_cut = zmax[idx] > zc
+            lit = base if kl is None else np.minimum(255.0, base * kl[:, None])
+            fcol = (lit * (1 - fog) + self.fog_arr * fog).astype(np.int32)
+            near_cut = zmax > zc
             ok = ~near_cut
             if ok.any():
-                sel = idx[ok]
-                P2 = scr[F[sel]]
-                mn, mx = P2.min(axis=1), P2.max(axis=1)
-                R_ = self.rect
+                if not ok.all():
+                    sel, P2o, fc = idx[ok], P2[ok], fcol[ok]
+                else:
+                    sel, P2o, fc = idx, P2, fcol
+                dep = depth[ok] if not ok.all() else depth
+                mn, mx = P2o.min(axis=1), P2o.max(axis=1)
                 inside = (mx[:, 0] >= R_.left) & (mn[:, 0] <= R_.right) & (mx[:, 1] >= R_.top) & (mn[:, 1] <= R_.bottom)
                 big = (mn[:, 0] < R_.left - 50) | (mx[:, 0] > R_.right + 50) | (mn[:, 1] < R_.top - 50) | (mx[:, 1] > R_.bottom + 50)
-                sel, P2, fc, big = sel[inside], P2[inside], fcol[ok][inside], big[inside]
-                n_ = len(sel)
-                self.items.extend(zip([layer] * n_, depth[sel].tolist(), ['poly'] * n_, P2.tolist(), fc.tolist(),
-                                      [outline] * n_, big.tolist()))
+                # modo: 2 = recortar na viewport; 1 = suavizar bordas (hq, só faces com mais de ~14 px); 0 = simples
+                mode = np.where(big, 2, ((mx - mn).max(axis=1) > 14) if self.hq else 0)
+                if not inside.all():
+                    P2o, fc, mode, dep = P2o[inside], fc[inside], mode[inside], dep[inside]
+                n_ = len(P2o)
+                if n_:
+                    self.items.extend(zip([layer] * n_, dep.tolist(), ['poly'] * n_, P2o.tolist(), fc.tolist(),
+                                          [outline] * n_, mode.tolist()))
             for jj in np.nonzero(near_cut)[0]:                  # faces cortadas pelo plano near
-                j = idx[jj]
-                poly = self._clip_near(list(Pc[j]))
+                poly = self._clip_near(list(vc[Fk[jj]]))
                 if len(poly) < 3:
                     continue
                 pts = self._to_screen(np.array(poly))
-                self.items.append((layer, float(depth[j]), 'poly', pts.tolist(), fcol[jj].tolist(), outline, True))
+                self.items.append((layer, float(depth[jj]), 'poly', pts.tolist(), fcol[jj].tolist(), outline, 2))
 
     _carr = {}
 
     def _color_array(self, colors):
+        if isinstance(colors, np.ndarray):          # cores que mudam a cada quadro: sem cache
+            return colors
         key = id(colors)
         hit = self._carr.get(key)
         if hit is not None and hit[0] is colors:
             return hit[1]
         arr = np.array(colors, dtype=np.float32)
-        if len(self._carr) > 300:
+        if len(self._carr) > 3000:
             self._carr.clear()
         self._carr[key] = (colors, arr)
         return arr
@@ -362,13 +418,13 @@ class Renderer3D:
         clip = surf.get_clip()
         surf.set_clip(self.rect)
         # algoritmo do pintor: camada, depois do mais distante ao mais próximo
-        self.items.sort(key=lambda it: (it[0], -it[1]))
+        self.items.sort(key=lambda it: it[0] * 1e7 - it[1])
         cx0, cy0, cx1, cy1 = self.rect.left, self.rect.top, self.rect.right, self.rect.bottom
         for it in self.items:
             kind = it[2]
             if kind == 'poly':
                 pts, col, outline = it[3], it[4], it[5]
-                if it[6]:                           # polígono que extrapola a viewport: recorte 2D
+                if it[6] == 2:                      # polígono que extrapola a viewport: recorte 2D
                     xs = [q[0] for q in pts]
                     ys = [q[1] for q in pts]
                     if max(xs) < cx0 or min(xs) > cx1 or max(ys) < cy0 or min(ys) > cy1:
@@ -378,6 +434,8 @@ class Renderer3D:
                         continue
                 try:
                     pygame.draw.polygon(surf, col, pts)
+                    if it[6] == 1:                  # antisserrilhamento das bordas (qualidade alta)
+                        pygame.draw.aalines(surf, col, True, pts)
                     if outline:
                         pygame.draw.polygon(surf, outline, pts, 1)
                 except (TypeError, ValueError):
